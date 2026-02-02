@@ -6,18 +6,55 @@ import Groq from "groq-sdk";
 dotenv.config();
 
 const app = express();
-app.use(cors());
+
+// ✅ Allow your Vercel frontend + local dev
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://ocrv-3nl6.vercel.app", // ✅ your current Vercel domain
+];
+
+// If you use preview deployments on Vercel (random URLs), this helps too:
+function isAllowedOrigin(origin) {
+  if (!origin) return true; // allow server-to-server / curl
+  if (allowedOrigins.includes(origin)) return true;
+  if (origin.endsWith(".vercel.app")) return true; // allow Vercel previews
+  return false;
+}
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (isAllowedOrigin(origin)) return cb(null, true);
+      return cb(new Error("CORS blocked: " + origin));
+    },
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
+
 app.use(express.json({ limit: "10mb" }));
+
+// ✅ Basic health check (useful for Render)
+app.get("/", (req, res) => {
+  res.json({ ok: true, message: "OCRV server is running" });
+});
+
+app.get("/health", (req, res) => {
+  res.json({ ok: true });
+});
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 function toNumber(x) {
   if (x === null || x === undefined) return null;
   if (typeof x === "number") return Number.isFinite(x) ? x : null;
+
   const s = String(x)
     .replace(/[, ]+/g, "")
     .replace(/[^0-9.-]/g, "");
   if (!s) return null;
+
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
@@ -36,13 +73,14 @@ function reconcileMath(structured) {
   if (!structured || typeof structured !== "object") return structured;
 
   structured.subtotal = round2(toNumber(structured.subtotal));
-  structured.tax_rate = toNumber(structured.tax_rate); // keep as number: 13 means 13%
+  structured.tax_rate = toNumber(structured.tax_rate); // 13 means 13%
   structured.tax_amount = round2(toNumber(structured.tax_amount));
   structured.total = round2(toNumber(structured.total));
 
   const items = Array.isArray(structured.line_items)
     ? structured.line_items
     : [];
+
   structured.line_items = items.map((it) => {
     let qty = toNumber(it.qty);
     let unit = round2(toNumber(it.unit_price));
@@ -179,6 +217,11 @@ Rules:
 - If a memo: put summary into notes, leave line_items empty
 `.trim();
 
+    // ✅ Helpful error if missing key
+    if (!process.env.GROQ_API_KEY) {
+      return res.status(500).json({ error: "Missing GROQ_API_KEY in env." });
+    }
+
     const completion = await groq.chat.completions.create({
       model: "llama-3.3-70b-versatile",
       temperature: 0.1,
@@ -200,6 +243,9 @@ Rules:
   }
 });
 
-app.listen(process.env.PORT || 5050, () => {
-  console.log(`Server running on http://localhost:${process.env.PORT || 5050}`);
+// ✅ Render uses process.env.PORT, so this is perfect
+const PORT = process.env.PORT || 5050;
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
